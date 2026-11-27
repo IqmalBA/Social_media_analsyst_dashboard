@@ -6,7 +6,8 @@ entirely on free tiers.
 
 
 
-**Live demo:** _add your Streamlit link here_
+**Live demo:** https://dashboardmedia.streamlit.app/
+
 
 ---
 
