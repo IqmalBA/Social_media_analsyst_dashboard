@@ -1,0 +1,14 @@
+# Secrets - never commit
+.streamlit/secrets.toml
+*.env
+token*.txt
+
+# Local data
+data/
+input/
+logs/
+venv/
+.venv/
+__pycache__/
+*.db
+!demo/emplifi_demo.db

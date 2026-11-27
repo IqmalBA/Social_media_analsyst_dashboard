@@ -1,0 +1,4 @@
+{
+  "sqlite": "demo/emplifi_demo.db",
+  "demo": true
+}
