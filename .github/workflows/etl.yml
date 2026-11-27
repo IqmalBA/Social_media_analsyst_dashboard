@@ -1,0 +1,89 @@
+name: Perbarui data Emplifi
+
+# Dipicu oleh Google Apps Script setiap ada email laporan Feed baru
+# (maksimal 1 jam setelah email masuk), atau manual lewat "Run workflow".
+on:
+  repository_dispatch:
+    types: [laporan_emplifi]
+  workflow_dispatch:
+  # Di repo produksi ditambah jadwal harian untuk menuntaskan antrean analisis AI:
+  # schedule:
+  #   - cron: "17 2 * * *"
+
+permissions:
+  contents: write              # untuk menerbitkan database ke branch "data"
+
+concurrency:
+  group: etl-emplifi           # laporan diproses satu per satu, berurutan
+  cancel-in-progress: false
+
+jobs:
+  etl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      EMPLIFI_DB: data/emplifi.db
+      PYTHONIOENCODING: utf-8
+      TZ: Asia/Jakarta
+    steps:
+      - name: Ambil kode
+        uses: actions/checkout@v4
+
+      - name: Siapkan Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Pasang library
+        run: pip install -r requirements.txt
+
+      - name: Ambil database terakhir
+        run: |
+          mkdir -p data
+          if git fetch --depth=1 origin data; then
+            git show FETCH_HEAD:emplifi.db > data/emplifi.db
+            echo "Database terakhir diambil ($(du -h data/emplifi.db | cut -f1))."
+          else
+            echo "Branch data belum ada; mulai dari database kosong."
+          fi
+
+      - name: Unduh dan proses laporan
+        id: etl
+        if: github.event_name == 'repository_dispatch'
+        continue-on-error: true
+        env:                     # lewat env (bukan langsung di skrip) demi keamanan
+          LAPORAN_LINK: ${{ github.event.client_payload.link }}
+          LAPORAN_TANGGAL: ${{ github.event.client_payload.tanggal }}
+          LAPORAN_ID: ${{ github.event.client_payload.id }}
+        run: python process_link.py
+
+      - name: Analisis AI (Gemini)
+        if: always()
+        continue-on-error: true  # AI gagal / kuota habis -> data utama tetap diterbitkan
+        timeout-minutes: 12
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python ai_analysis.py
+
+      - name: Terbitkan database untuk dashboard
+        if: always()
+        run: |
+          # selalu perbarui struktur & view agar upgrade dashboard langsung berlaku
+          python -c "from db_sqlite import open_db, prepare; from settings import database_path; c = open_db(database_path()); prepare(c); c.close()"
+          UKURAN=$(stat -c %s data/emplifi.db)
+          [ "$UKURAN" -lt 95000000 ] || { echo "Database > 95 MB, terlalu besar untuk GitHub."; exit 1; }
+          mkdir terbit && cp data/emplifi.db terbit/
+          cd terbit
+          git init -q -b data
+          git add emplifi.db
+          git -c user.name="Emplifi Bot" -c user.email="bot@users.noreply.github.com" \
+              commit -q -m "Data $(date '+%Y-%m-%d %H:%M WIB')"
+          git push -q -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" data
+          echo "Database diterbitkan."
+
+      - name: Tandai gagal agar pengelola mendapat email
+        if: steps.etl.outcome == 'failure'
+        run: |
+          echo "Pemrosesan laporan gagal. Penyebabnya juga tampil di bagian atas dashboard."
+          exit 1
